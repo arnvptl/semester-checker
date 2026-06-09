@@ -3,11 +3,16 @@ Semester Report Card Update Checker
 ====================================
 Checks if examId=10 on the WIT results portal has been updated
 from Sem 3 → Sem 4 for B.Tech. - CS.  When a new semester is
-detected, downloads the report-card PDF and emails it.
+detected, downloads report-card PDFs for all configured USNs
+and emails them.
+
+Designed to run as a GitHub Actions cron job every 30 minutes.
+GMAIL_APP_PASSWORD must be set as a repository secret.
 """
 
 import json
 import os
+import time
 import smtplib
 import sys
 from datetime import datetime, timezone
@@ -25,11 +30,13 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
+
+
 # ──────────────────────────────────────────────
 # Configuration
 # ──────────────────────────────────────────────
 BASE_URL = "https://witresults.contineo.in:7074/index.php"
-USN = "2402111144"
+PROBE_USN = "2402111144"  # USN used to detect semester changes
 EXAM_ID = "10"
 
 HEADERS = {
@@ -54,6 +61,23 @@ RECIPIENT_EMAIL = "arnavp651@gmail.com"
 SENDER_EMAIL = "lenibba1234@gmail.com"
 
 STATE_FILE = Path(__file__).parent / "state.json"
+
+# All USNs to download report cards for when a new semester is detected
+USNS = [
+    "2402111144",  # Probe USN (also gets downloaded)
+    "2402111004",
+    "2402111084",
+    "2402111151",
+    "2502112015",
+    "2502112016",
+    "2502112003",
+    "2402111135",
+    "2406111010",
+    "2402111072",
+    "2502112005",
+    "2402111024",
+    "2402111007",
+]
 
 # ──────────────────────────────────────────────
 # Helpers
@@ -82,7 +106,7 @@ def fetch_semester_info(session: requests.Session) -> str | None:
     payload = {
         "option": "com_examresult",
         "task": "getResultexam",
-        "usn": USN,
+        "usn": PROBE_USN,
         "examId": EXAM_ID,
     }
 
@@ -109,16 +133,17 @@ def fetch_semester_info(session: requests.Session) -> str | None:
     return None
 
 
-def download_report_card(session: requests.Session) -> bytes | None:
+
+def download_report_card(session: requests.Session, usn: str) -> bytes | None:
     """
-    Download the grade-card PDF for the configured USN + examId.
+    Download the grade-card PDF for a given USN + examId.
     Returns raw PDF bytes or None on failure.
     """
     payload = {
         "option": "com_report",
         "task": "getReport",
         "id": "procard",
-        "usn": USN,
+        "usn": usn,
         "examId": EXAM_ID,
     }
 
@@ -126,21 +151,22 @@ def download_report_card(session: requests.Session) -> bytes | None:
         resp = session.post(BASE_URL, headers=HEADERS, data=payload, verify=False, timeout=20)
         resp.raise_for_status()
     except requests.RequestException as exc:
-        print(f"❌ PDF download failed: {exc}")
+        print(f"  ❌ PDF download failed for {usn}: {exc}")
         return None
 
     content = resp.content
     if not content.startswith(b"%PDF"):
-        print("⚠️  Downloaded content is not a valid PDF.")
+        print(f"  ⚠️  {usn}: Response is not a valid PDF.")
         return None
 
-    print(f"✅ Downloaded valid PDF ({len(content):,} bytes)")
+    print(f"  ✅ {usn}: Downloaded ({len(content):,} bytes)")
     return content
 
 
-def send_email(pdf_bytes: bytes, semester: str) -> bool:
+def send_email(pdfs: dict[str, bytes], semester: str) -> bool:
     """
-    Send the report-card PDF as an email attachment via Gmail SMTP.
+    Send report-card PDFs as email attachments via Gmail SMTP.
+    pdfs: dict mapping USN -> PDF bytes.
     Requires GMAIL_APP_PASSWORD environment variable.
     """
     app_password = os.environ.get("GMAIL_APP_PASSWORD")
@@ -151,37 +177,73 @@ def send_email(pdf_bytes: bytes, semester: str) -> bool:
     msg = MIMEMultipart()
     msg["From"] = SENDER_EMAIL
     msg["To"] = RECIPIENT_EMAIL
-    msg["Subject"] = f"🎓 New Semester Report Card Available — {semester}"
+    msg["Subject"] = f"🎓 New Semester Report Cards Available — {semester} ({len(pdfs)} students)"
 
+    usn_list = "\n".join(f"  • {usn}" for usn in pdfs)
     body = (
         f"Hi Arnav,\n\n"
-        f"Good news! The WIT results portal has been updated.\n\n"
-        f"  • USN:      {USN}\n"
-        f"  • Semester:  {semester}\n"
-        f"  • Exam ID:   {EXAM_ID}\n\n"
-        f"Your report card PDF is attached to this email.\n\n"
+        f"Good news! The WIT results portal has been updated to {semester}.\n\n"
+        f"Report cards attached for {len(pdfs)} students:\n{usn_list}\n\n"
+        f"  • Exam ID: {EXAM_ID}\n\n"
         f"— Semester Checker Bot 🤖"
     )
     msg.attach(MIMEText(body, "plain"))
 
-    # Attach the PDF
-    pdf_part = MIMEBase("application", "pdf")
-    pdf_part.set_payload(pdf_bytes)
-    encoders.encode_base64(pdf_part)
-    pdf_part.add_header(
-        "Content-Disposition",
-        f'attachment; filename="{USN}_report_card.pdf"',
-    )
-    msg.attach(pdf_part)
+    # Attach all PDFs
+    for usn, pdf_bytes in pdfs.items():
+        pdf_part = MIMEBase("application", "pdf")
+        pdf_part.set_payload(pdf_bytes)
+        encoders.encode_base64(pdf_part)
+        pdf_part.add_header(
+            "Content-Disposition",
+            f'attachment; filename="{usn}_report_card.pdf"',
+        )
+        msg.attach(pdf_part)
 
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as server:
             server.login(SENDER_EMAIL, app_password)
             server.send_message(msg)
-        print(f"📧 Email sent to {RECIPIENT_EMAIL}")
+        print(f"📧 Email sent to {RECIPIENT_EMAIL} with {len(pdfs)} attachments")
         return True
     except smtplib.SMTPException as exc:
         print(f"❌ Failed to send email: {exc}")
+        return False
+
+
+def send_notification_email(semester: str, failed_usns: list[str]) -> bool:
+    """
+    Fallback: Send a plain notification email (no PDFs) when downloads fail.
+    """
+    app_password = os.environ.get("GMAIL_APP_PASSWORD")
+    if not app_password:
+        print("❌ GMAIL_APP_PASSWORD environment variable not set!")
+        return False
+
+    msg = MIMEMultipart()
+    msg["From"] = SENDER_EMAIL
+    msg["To"] = RECIPIENT_EMAIL
+    msg["Subject"] = f"🔔 New Results Available — {semester} (PDFs failed to download)"
+
+    failed_list = "\n".join(f"  • {usn}" for usn in failed_usns)
+    body = (
+        f"Hi Arnav,\n\n"
+        f"The WIT results portal has been updated to {semester}!\n\n"
+        f"However, the report card PDFs could not be downloaded for:\n{failed_list}\n\n"
+        f"You can check the results manually at:\n"
+        f"  {BASE_URL}\n\n"
+        f"— Semester Checker Bot 🤖"
+    )
+    msg.attach(MIMEText(body, "plain"))
+
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as server:
+            server.login(SENDER_EMAIL, app_password)
+            server.send_message(msg)
+        print(f"📧 Notification email sent to {RECIPIENT_EMAIL}")
+        return True
+    except smtplib.SMTPException as exc:
+        print(f"❌ Failed to send notification email: {exc}")
         return False
 
 
@@ -202,7 +264,7 @@ def main() -> None:
 
     session = requests.Session()
 
-    # Step 1: Fetch current semester info
+    # Step 1: Fetch current semester info (using probe USN)
     current_semester = fetch_semester_info(session)
     if current_semester is None:
         print("\n⏭️  Could not determine current semester. Will retry next run.")
@@ -223,16 +285,32 @@ def main() -> None:
 
     print(f"🆕 NEW SEMESTER DETECTED: {current_semester}")
 
-    # Step 3: Download the report card
-    pdf_bytes = download_report_card(session)
-    if pdf_bytes is None:
-        print("⚠️  Could not download report card. Will retry next run.")
-        state["last_checked"] = datetime.now(timezone.utc).isoformat()
-        save_state(state)
-        return
+    # Step 3: Download report cards for all USNs
+    print(f"\n📋 Downloading report cards for {len(USNS)} USNs...\n")
 
-    # Step 4: Email the report card
-    email_sent = send_email(pdf_bytes, current_semester)
+    downloaded: dict[str, bytes] = {}
+    failed: list[str] = []
+
+    for i, usn in enumerate(USNS, 1):
+        print(f"[{i}/{len(USNS)}] {usn}")
+        pdf_bytes = download_report_card(session, usn)
+        if pdf_bytes:
+            downloaded[usn] = pdf_bytes
+        else:
+            failed.append(usn)
+        time.sleep(1)  # Be nice to the server
+
+    print(f"\n📊 Results: {len(downloaded)} downloaded, {len(failed)} failed")
+    if failed:
+        print(f"❌ Failed USNs: {', '.join(failed)}")
+
+    # Step 4: Email results
+    if downloaded:
+        email_sent = send_email(downloaded, current_semester)
+    else:
+        # Fallback: all PDFs failed, send a notification-only email
+        print("\n⚠️  All PDF downloads failed. Sending notification email instead...")
+        email_sent = send_notification_email(current_semester, failed)
 
     # Step 5: Update state
     state["last_semester"] = current_semester
@@ -240,10 +318,12 @@ def main() -> None:
     state["notified"] = email_sent
     save_state(state)
 
-    if email_sent:
-        print("\n🎉 All done! Report card downloaded and emailed successfully.")
+    if email_sent and downloaded:
+        print(f"\n🎉 All done! {len(downloaded)} report cards emailed successfully.")
+    elif email_sent:
+        print("\n📬 Notification email sent (no PDFs could be downloaded).")
     else:
-        print("\n⚠️  Report card downloaded but email failed. Check GMAIL_APP_PASSWORD.")
+        print("\n⚠️  Email sending failed. Check GMAIL_APP_PASSWORD.")
         sys.exit(1)
 
 

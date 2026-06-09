@@ -1,66 +1,59 @@
-# 🎓 Semester Report Card Checker
+# Semester Report Card Checker 🎓
 
-A GitHub Actions worker that checks the **WIT results portal** every 30 minutes for semester report card updates. When a new semester (Sem 4) is detected for `examId=10`, it automatically downloads the report card PDF and emails it to you.
+Automatically checks the WIT results portal for new semester results (Sem 3 → Sem 4) and emails report card PDFs for all configured USNs.
 
 ## How It Works
 
-1. Every 30 minutes, GitHub Actions runs `checker.py`
-2. The script hits the WIT results portal with USN `2402111144` and `examId=10`
-3. It parses the response to check the course field:
-   - **`B.Tech. - CS, Sem 3`** → Old (no action)
-   - **`B.Tech. - CS, Sem 4`** → New! Downloads PDF and sends email
-4. State is tracked in `state.json` to avoid duplicate notifications
+1. **Probes** the portal using a probe USN to detect if results have been updated to Sem 4
+2. **Downloads** report card PDFs for all 13 configured USNs
+3. **Emails** all PDFs as attachments to `arnavp651@gmail.com`
+4. **Falls back** to a notification-only email if PDF downloads fail
+5. **Commits** updated state back to the repo to avoid duplicate notifications
 
-## Setup
+Runs every 30 minutes via GitHub Actions.
 
-### 1. Create a Gmail App Password
+## Setup (GitHub Actions)
 
-1. Go to [Google App Passwords](https://myaccount.google.com/apppasswords)
-2. Sign in with `arnavp651@gmail.com`
-3. Generate a new app password (select "Mail" and "Other")
-4. Copy the 16-character password
+### 1. Add Repository Secret
 
-### 2. Create a GitHub Repository
+Go to **Settings → Secrets and variables → Actions → New repository secret**:
 
-```bash
-cd semester-checker
-git init
-git add .
-git commit -m "Initial commit"
-git remote add origin https://github.com/YOUR_USERNAME/semester-checker.git
-git push -u origin main
-```
+| Secret | Value |
+|--------|-------|
+| `GMAIL_APP_PASSWORD` | Your Gmail app password |
 
-### 3. Add the Secret
+### 2. Enable the Workflow
 
-1. Go to your repo on GitHub → **Settings** → **Secrets and variables** → **Actions**
-2. Click **New repository secret**
-3. Name: `GMAIL_APP_PASSWORD`
-4. Value: The 16-character app password from step 1
+The workflow runs automatically on push. You can also trigger it manually from **Actions → Check Semester Update → Run workflow**.
 
-### 4. Enable the Workflow
+### 3. Configure USNs
 
-The workflow will automatically start running every 30 minutes. You can also trigger it manually:
+Edit the `USNS` list in `checker.py` to add or remove USNs:
 
-1. Go to **Actions** tab in your GitHub repo
-2. Select **Check Semester Update**
-3. Click **Run workflow**
-
-## Local Testing
-
-```bash
-# Set the app password
-set GMAIL_APP_PASSWORD=your-app-password-here
-
-# Run the checker
-python checker.py
+```python
+USNS = [
+    "2402111144",  # Probe USN (also gets downloaded)
+    "2402111004",
+    "2402111084",
+    # ... add more here
+]
 ```
 
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `checker.py` | Main script — check, download, email |
-| `state.json` | Tracks last known semester |
+| `checker.py` | Main script — detect, download, email |
+| `state.json` | Tracks last known semester (auto-committed by bot) |
 | `.github/workflows/check_semester.yml` | Cron job (every 30 min) |
 | `requirements.txt` | Python dependencies |
+
+## Local Testing (Optional)
+
+```bash
+# Set the env var
+set GMAIL_APP_PASSWORD=your-app-password-here
+
+# Run
+python checker.py
+```

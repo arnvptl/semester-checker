@@ -2,3 +2,6 @@
 __pycache__/
 *.pyc
 .env
+test_email.py
+send_all.py
+checkfor.json
