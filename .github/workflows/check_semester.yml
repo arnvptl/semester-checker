@@ -1,11 +1,14 @@
 name: Check Semester Update
 
 on:
+  # External cron trigger (via cron-job.org → GitHub API)
+  repository_dispatch:
+    types: [check-semester]
+  # Backup: GitHub's built-in cron (unreliable timing)
   schedule:
-    # Run every 15 minutes
     - cron: '*/15 * * * *'
+  # Manual trigger from GitHub UI
   workflow_dispatch:
-    # Allow manual triggering from GitHub UI
 
 permissions:
   contents: write
